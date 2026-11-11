@@ -70,6 +70,30 @@ export interface ProgressEvent {
   downloaded: string;
   total: string;
   line: string;
+  /** 已下载字节数（可选，后端未提供时为 undefined） */
+  downloadedBytes?: number;
+  /** 总字节数（可选） */
+  totalBytes?: number;
+  /** 当前文件已下载字节数（可选） */
+  fileBytesDone?: number;
+  /** 当前文件总字节数（可选） */
+  fileBytesTotal?: number;
+  /** 单个文件的平均速度（字节/秒，可选） */
+  speedBps?: number;
+  /** 文件清单及各文件累计状态（可选，后端可逐步提供） */
+  files?: FileProgressItem[];
+}
+
+/** 单个文件的分项进度 */
+export interface FileProgressItem {
+  path: string;
+  size?: number;
+  /** 该文件已下载字节数 */
+  done?: number;
+  /** 0-100 */
+  percent?: number;
+  /** 该文件状态 */
+  status?: "pending" | "running" | "completed" | "failed" | "skipped";
 }
 
 export interface DownloadRequest {
@@ -249,30 +273,77 @@ export function __setMockProgressCb(cb: ((e: ProgressEvent) => void) | null) {
 }
 
 function mockDownload(req: DownloadRequest) {
-  const total = req.files.length || 3;
   const names = req.files.length ? req.files : ["a.bin", "b.bin", "c.bin"];
-  let i = 0;
-  let pct = 0;
+  const total = names.length;
+  // 为每个文件生成一个稳定的伪随机大小（0.5~50 MiB），便于展示分项与总量
+  const sizes = names.map((n, idx) => {
+    let h = 0;
+    for (let k = 0; k < n.length; k++) h = (h * 31 + n.charCodeAt(k)) >>> 0;
+    const mib = 0.5 + ((h + idx * 977) % 495) / 10;
+    return Math.round(mib * 1024 * 1024);
+  });
+  const totalBytes = sizes.reduce((a, b) => a + b, 0);
+
+  let i = 0; // 当前文件索引
+  let doneInFile = 0; // 当前文件已下载字节
+  let doneAll = 0; // 全部已下载字节
+
+  const emitFiles = (): FileProgressItem[] =>
+    names.map((p, idx) => {
+      const size = sizes[idx];
+      if (idx < i) return { path: p, size, done: size, percent: 100, status: "completed" };
+      if (idx === i)
+        return {
+          path: p,
+          size,
+          done: doneInFile,
+          percent: Math.round((doneInFile / size) * 100),
+          status: "running",
+        };
+      return { path: p, size, done: 0, percent: 0, status: "pending" };
+    });
+
+  const fmt = (bytes: number) => {
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MiB";
+    if (bytes >= 1024) return (bytes / 1024).toFixed(0) + " KiB";
+    return bytes + " B";
+  };
+
   const tick = () => {
-    const speed = (Math.random() * 20 + 5).toFixed(2) + " MiB/s";
-    const dl = (pct * 0.5).toFixed(1) + " MiB";
+    if (i >= total) return;
+    const size = sizes[i];
+    // 每次前进 4%~18%
+    const step = Math.round(size * (0.04 + Math.random() * 0.14));
+    doneInFile = Math.min(size, doneInFile + step);
+    doneAll = sizes.slice(0, i).reduce((a, b) => a + b, 0) + doneInFile;
+    const speedBps = (Math.random() * 18 + 6) * 1024 * 1024;
+    const speed = (speedBps / (1024 * 1024)).toFixed(2) + " MiB/s";
+    const filePercent = Math.round((doneInFile / size) * 100);
+
     mockProgressCb?.({
       taskId: req.taskId,
       status: "running",
       fileIndex: i + 1,
       fileTotal: total,
       currentFile: names[i],
-      filePercent: Math.round(pct),
+      filePercent,
       speed,
-      downloaded: dl,
-      total: "50 MiB",
-      line: `[${i + 1}/${total}] ${Math.round(pct)}% ${names[i]}`,
+      speedBps,
+      downloaded: fmt(doneAll),
+      total: fmt(totalBytes),
+      line: `[${i + 1}/${total}] ${filePercent}% ${names[i]}`,
+      downloadedBytes: doneAll,
+      totalBytes,
+      fileBytesDone: doneInFile,
+      fileBytesTotal: size,
+      files: emitFiles(),
     });
-    pct += 12;
-    if (pct > 100) {
+
+    if (doneInFile >= size) {
       i++;
-      pct = 0;
+      doneInFile = 0;
       if (i >= total) {
+        doneAll = totalBytes;
         mockProgressCb?.({
           taskId: req.taskId,
           status: "completed",
@@ -281,9 +352,18 @@ function mockDownload(req: DownloadRequest) {
           currentFile: "",
           filePercent: 100,
           speed: "",
-          downloaded: "",
-          total: "",
+          downloaded: fmt(totalBytes),
+          total: fmt(totalBytes),
           line: "下载完成",
+          downloadedBytes: totalBytes,
+          totalBytes,
+          files: names.map((p, idx) => ({
+            path: p,
+            size: sizes[idx],
+            done: sizes[idx],
+            percent: 100,
+            status: "completed" as const,
+          })),
         });
         return;
       }
