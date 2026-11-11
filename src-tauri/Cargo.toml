@@ -2,6 +2,7 @@
 name = "mirrordl-desktop"
 version = "0.1.0"
 description = "Mirror Download 桌面版"
+license = "MIT"
 authors = ["mirrordl-dev"]
 edition = "2021"
 rust-version = "1.77"

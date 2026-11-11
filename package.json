@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
   "description": "Mirror Download 桌面版 - 国内 AI 模型高速下载工具 GUI",
   "scripts": {
     "dev": "vite",
