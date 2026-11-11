@@ -2,12 +2,16 @@
 import { computed, onMounted } from "vue";
 import { storeToRefs } from "pinia";
 import { useDownloadsStore } from "../stores/downloads";
+import { isTauri } from "../api";
 import QueueStats from "../components/download/QueueStats.vue";
 import DownloadTaskCard from "../components/download/DownloadTaskCard.vue";
 import DownloadEmpty from "../components/download/DownloadEmpty.vue";
 
 const store = useDownloadsStore();
-const { tasks, activeCount } = storeToRefs(store);
+const { tasks, activeCount, overallProgress, overallSpeedBps, overallBytes } =
+  storeToRefs(store);
+
+const demoExpandFirst = !isTauri && window.location.href.includes("expandFirst");
 
 const totalCount = computed(() => tasks.value.length);
 const finishedCount = computed(
@@ -32,7 +36,52 @@ function handleClearFinished() {
 
 onMounted(() => {
   void store.init();
+  // 仅浏览器调试：?demo=1 自动注入若干 mock 任务，便于纯前端预览各种下载状态
+  if (!isTauri && window.location.href.includes("demo=1")) {
+    void seedDemo();
+  }
 });
+
+async function seedDemo() {
+  const mk = (taskId: string, repoId: string, files: string[], quant?: string) => ({
+    taskId,
+    repoId,
+    files,
+    include: files,
+    exclude: [] as string[],
+    quant,
+    targetMode: "none",
+    comfyuiRoot: "",
+    lmstudioRoot: "",
+    hfToken: "",
+    modelscopeToken: "",
+    token: "",
+    proxy: "",
+  });
+  await store.enqueue(
+    mk("demo-1", "Qwen/Qwen2.5-7B-Instruct", [
+      "config.json",
+      "model-00001-of-00004.safetensors",
+      "model-00002-of-00004.safetensors",
+      "model-00003-of-00004.safetensors",
+      "model-00004-of-00004.safetensors",
+      "tokenizer.json",
+      "vocab.json",
+    ], "Q4_K_M"),
+  );
+  await store.enqueue(
+    mk("demo-2", "stabilityai/stable-diffusion-xl-base-1.0", [
+      "README.md",
+      "unet/diffusion_pytorch_model.safetensors",
+      "vae/diffusion_pytorch_model.safetensors",
+    ]),
+  );
+  setTimeout(() => {
+    void store.enqueue(
+      mk("demo-3", "google/gemma-2-2b-it", ["config.json", "model.safetensors", "tokenizer.model"]),
+    );
+  }, 900);
+}
 </script>
 
 <template>
@@ -48,6 +97,10 @@ onMounted(() => {
       :active-count="activeCount"
       :total-count="totalCount"
       :finished-count="finishedCount"
+      :overall-progress="overallProgress"
+      :overall-speed="overallSpeedBps"
+      :bytes-done="overallBytes.done"
+      :bytes-total="overallBytes.total"
       @clear-finished="handleClearFinished"
     />
 
@@ -56,6 +109,7 @@ onMounted(() => {
         v-for="t in tasks"
         :key="t.id"
         :task="t"
+        :initial-expanded="demoExpandFirst && t.id === 'demo-1'"
         @cancel="handleCancel"
         @remove="handleRemove"
       />
