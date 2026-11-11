@@ -11,6 +11,7 @@ use crate::cli;
 use crate::models::*;
 use crate::parser::{self, PullParser};
 use crate::settings;
+use crate::size_fetch::{self, SizeFetchCtx};
 
 /// 运行中的下载任务登记表：task_id -> 取消标志
 pub struct DownloadRegistry {
@@ -100,6 +101,12 @@ pub async fn find_repo(
     let _guard = _lock.0.lock().await;
     let inv = cli::resolve_cli().ok_or_else(|| "未找到 mirrordl CLI".to_string())?;
 
+    // 保留原始值供后续大小补全使用（下面的参数拼装会消费这些 Option）
+    let ctx_hf_token = hf_token.clone().unwrap_or_default();
+    let ctx_ms_token = modelscope_token.clone().unwrap_or_default();
+    let ctx_proxy = proxy.clone().unwrap_or_default();
+    let ctx_source = source.clone();
+
     let mut args: Vec<String> = vec!["find".into(), repo_id, "--json".into()];
     if let Some(rt) = repo_type.filter(|s| !s.is_empty()) {
         args.push("--repo-type".into());
@@ -131,7 +138,28 @@ pub async fn find_repo(
     }
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let raw = cli::run_capture(&inv, &arg_refs).await?;
-    parser::parse_find_json(&raw)
+    let mut info = parser::parse_find_json(&raw)?;
+
+    // 上游 CLI 的 `find --json` 不返回文件大小，这里按所选数据源额外查询仓库
+    // 文件树补全 size（best-effort，失败仅降级为不显示大小，不影响主查询）。
+    // 决定走哪个接口的源：优先用本次请求实际传入的 source（前端已回退到设置），
+    // 否则回退到 CLI 解析出的 info.source。
+    let effective_source = ctx_source
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| info.source.clone());
+    let ctx = SizeFetchCtx {
+        source: effective_source,
+        repo_id: info.id.clone(),
+        revision: info.revision.clone(),
+        hf_token: ctx_hf_token,
+        modelscope_token: ctx_ms_token,
+        proxy: ctx_proxy,
+    };
+    size_fetch::enrich_sizes(&mut info, &ctx).await;
+
+    Ok(info)
 }
 
 // ---------------- 下载 ----------------
