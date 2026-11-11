@@ -5,6 +5,7 @@ mod commands;
 mod models;
 mod parser;
 mod settings;
+mod size_fetch;
 
 use commands::{CliLock, DownloadRegistry};
 use tokio::sync::Mutex as AsyncMutex;
@@ -14,6 +15,7 @@ pub mod testing {
     pub use crate::cli::{resolve_cli, run_capture, CliInvocation as TestInvocation};
     pub use crate::models::RepoInfo as TestRepoInfo;
     pub use crate::parser::{parse_find_json, parse_probe, PullParser};
+    pub use crate::size_fetch::{enrich_sizes, SizeFetchCtx as TestSizeFetchCtx};
 
     pub fn resolve_cli_for_test() -> Option<TestInvocation> {
         resolve_cli()

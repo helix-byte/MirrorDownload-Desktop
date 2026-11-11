@@ -58,6 +58,51 @@ fn inv_display(inv: &testing::TestInvocation) -> String {
 
 #[test]
 #[ignore]
+fn real_size_enrich_fills_sizes() {
+    // 真实调用 CLI 取文件列表，再走 HF Mirror 树接口补全大小，验证能拿到 size。
+    let inv = testing::resolve_cli_for_test().expect("未找到 mirrordl CLI");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let raw = rt
+        .block_on(testing::run_capture_for_test(
+            &inv,
+            &[
+                "find",
+                "yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF",
+                "--json",
+                "-s",
+                "hf-mirror",
+            ],
+        ))
+        .expect("find 调用失败");
+    let mut info = testing::parse_find_json_for_test(&raw).expect("find 解析失败");
+    let before = info.files.iter().filter(|f| f.size.is_some()).count();
+    assert_eq!(before, 0, "CLI 原始输出不应带 size");
+
+    let ctx = testing::TestSizeFetchCtx {
+        source: "hf-mirror".to_string(),
+        repo_id: info.id.clone(),
+        revision: info.revision.clone(),
+        hf_token: String::new(),
+        modelscope_token: String::new(),
+        proxy: String::new(),
+    };
+    rt.block_on(testing::enrich_sizes(&mut info, &ctx));
+
+    let with_size = info.files.iter().filter(|f| f.size.is_some()).count();
+    let total: u64 = info.files.iter().filter_map(|f| f.size).sum();
+    println!(
+        "补全后：{}/{} 个文件带大小，合计 {} 字节",
+        with_size,
+        info.files.len(),
+        total
+    );
+    assert!(with_size > 0, "大小补全未生效");
+    // 至少 .gitattributes / README 这类小文件应有具体大小
+    assert!(info.files.iter().any(|f| f.size.unwrap_or(0) > 0));
+}
+
+#[test]
+#[ignore]
 fn real_cli_pull_progress_parses() {
     // 真实下载单个小文件，验证 PullParser 能解析出文件进度/速度
     let inv = testing::resolve_cli_for_test().expect("未找到 mirrordl CLI");

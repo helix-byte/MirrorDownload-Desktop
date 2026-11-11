@@ -257,7 +257,21 @@ function mockRepo(id: string): RepoInfo {
     "qwen2.5-7b-instruct-q4_k_m.gguf",
     "qwen2.5-7b-instruct-q8_0.gguf",
     "qwen2.5-7b-instruct-fp16.gguf",
-  ].map((p) => ({ path: p, lfs: p.endsWith(".safetensors") || p.endsWith(".gguf") }));
+  ].map((p) => {
+    const lfs = p.endsWith(".safetensors") || p.endsWith(".gguf");
+    // 为 mock 提供稳定伪随机大小（同一文件名总得到同样的值），便于浏览器调试时演示大小列
+    let h = 0;
+    for (let k = 0; k < p.length; k++) h = (h * 31 + p.charCodeAt(k)) >>> 0;
+    let size: number;
+    if (lfs) {
+      // 大文件：1.5 ~ 15 GB 之间
+      size = Math.round((1.5 + (h % 135) / 10) * 1024 * 1024 * 1024);
+    } else {
+      // 小文件：0.3 ~ 60 KiB 之间
+      size = Math.round((0.3 + (h % 600) / 10) * 1024);
+    }
+    return { path: p, lfs, size };
+  });
   return {
     id: id || "Qwen/Qwen2.5-7B-Instruct",
     source: "hf",
