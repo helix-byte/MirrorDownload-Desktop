@@ -250,6 +250,167 @@ fn build_download_args(req: &DownloadRequest) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
+/// 合并后的累积进度（进程结束时用于构造终态事件）
+struct MergedProgress {
+    file_index: u32,
+    file_total: u32,
+    current_file: String,
+    file_percent: f64,
+    downloaded: String,
+    total: String,
+}
+
+/// 下载完成度判定结果
+enum Verdict {
+    Completed,
+    Cancelled,
+    /// exit 0 但文件缺失/为空——实际没下完
+    Incomplete,
+    Failed,
+}
+
+/// 落盘校验上下文：目标根目录 + 期望文件清单
+struct VerifyCtx {
+    /// 可确定的落地根目录；None 表示无法定位（回退 parser 完整性判定）
+    root: Option<std::path::PathBuf>,
+    /// 期望存在的文件（相对仓库的子路径）
+    files: Vec<String>,
+}
+
+impl VerifyCtx {
+    fn from_request(req: &DownloadRequest) -> Self {
+        let files: Vec<String> = req
+            .files
+            .iter()
+            .filter(|f| !f.is_empty())
+            .cloned()
+            .collect();
+        // 仅在「普通输出目录」模式下可确定根目录；comfyui/lmstudio 由 CLI 自行决定子目录布局，难以定位
+        let root = if req.target_mode == "none" || req.target_mode.is_empty() {
+            req.output
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+        } else {
+            None
+        };
+        VerifyCtx { root, files }
+    }
+
+    /// 检查所有期望文件是否已在磁盘上存在且大小 > 0。
+    /// 返回 Some(true)=全部落盘, Some(false)=有缺失/空文件, None=无法校验（无根目录或无文件清单）
+    fn verify(&self) -> Option<bool> {
+        let root = self.root.as_ref()?;
+        if self.files.is_empty() {
+            return None;
+        }
+        // CLI 通常把仓库文件放到 <root>/<repo 名>/... 下，这里对「根 + 可选一层子目录」做宽松匹配
+        for f in &self.files {
+            let fname = f.rsplit('/').next().unwrap_or(f);
+            let direct = root.join(f);
+            let basename_here = root.join(fname);
+            let ok = file_nonempty(&direct) || file_nonempty(&basename_here) || find_under(root, fname);
+            if !ok {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+}
+
+fn file_nonempty(p: &std::path::Path) -> bool {
+    std::fs::metadata(p).map(|m| m.is_file() && m.len() > 0).unwrap_or(false)
+}
+
+/// 在 root 下（最多两层）递归查找指定文件名是否存在且非空
+fn find_under(root: &std::path::Path, fname: &str) -> bool {
+    fn walk(dir: &std::path::Path, fname: &str, depth: u8) -> bool {
+        let rd = match std::fs::read_dir(dir) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.is_file() {
+                if p.file_name().and_then(|n| n.to_str()) == Some(fname)
+                    && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
+                {
+                    return true;
+                }
+            } else if p.is_dir() && depth < 2 {
+                if walk(&p, fname, depth + 1) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    walk(root, fname, 0)
+}
+
+/// 合并 stdout / stderr 两个解析器的快照，取信息更完整的一方
+fn merge_parsers(out: Option<&PullParser>, err: Option<&PullParser>) -> MergedProgress {
+    // score：优先看 file_total，再看 file_index，最后看是否有字节文本
+    let score = |p: &PullParser| {
+        let (fi, ft, _cf, _fp, _sp, dl, _tot) = p.snapshot();
+        (ft as u64) * 1_000_000 + (fi as u64) * 1_000 + if dl.is_empty() { 0 } else { 1 }
+    };
+    let chosen = match (out, err) {
+        (Some(o), Some(e)) => {
+            if score(e) > score(o) {
+                e
+            } else {
+                o
+            }
+        }
+        (Some(o), None) => o,
+        (None, Some(e)) => e,
+        (None, None) => {
+            // 都没有：返回空快照
+            return MergedProgress {
+                file_index: 0,
+                file_total: 0,
+                current_file: String::new(),
+                file_percent: 0.0,
+                downloaded: String::new(),
+                total: String::new(),
+            };
+        }
+    };
+    let (file_index, file_total, current_file, file_percent, _speed, downloaded, total) =
+        chosen.snapshot();
+    MergedProgress {
+        file_index,
+        file_total,
+        current_file,
+        file_percent,
+        downloaded,
+        total,
+    }
+}
+
+/// 判定下载是否真正完成
+fn evaluate_completion(exit_ok: bool, merged: &MergedProgress, ctx: &VerifyCtx) -> Verdict {
+    if !exit_ok {
+        return Verdict::Failed;
+    }
+    // 1) 优先：文件落盘校验（最可信）
+    match ctx.verify() {
+        Some(true) => return Verdict::Completed,
+        Some(false) => return Verdict::Incomplete,
+        None => {}
+    }
+    // 2) 回退：parser 是否报告全部文件完成
+    if merged.file_total > 0 {
+        if merged.file_index >= merged.file_total {
+            return Verdict::Completed;
+        }
+        return Verdict::Incomplete;
+    }
+    // 3) 完全无法得知（无字节/无文件数）：尊重 exit code，但属于尽力而为
+    Verdict::Completed
+}
+
 #[tauri::command]
 pub async fn start_download(
     app: AppHandle,
@@ -269,6 +430,9 @@ pub async fn start_download(
 
     let app_handle = app.clone();
     let tid = task_id.clone();
+
+    // 落盘校验所需信息（在移入异步任务前取出）
+    let verify_ctx = VerifyCtx::from_request(&req);
 
     // 立即发送 queued -> running
     let queued = ProgressEvent {
@@ -304,6 +468,7 @@ pub async fn start_download(
         let stderr = child.stderr.take();
 
         // stdout 与 stderr 各用独立解析器，逐行解析并推送进度事件
+        // stdout 解析器在结束时会返回自身，以便合并累积进度
         let app_out = app_handle.clone();
         let tid_out = tid.clone();
         let stdout_task = tokio::spawn(async move {
@@ -316,6 +481,7 @@ pub async fn start_download(
                     }
                 }
             }
+            parser
         });
 
         let app_err = app_handle.clone();
@@ -330,6 +496,7 @@ pub async fn start_download(
                     }
                 }
             }
+            parser
         });
 
         // 等待进程结束或被取消
@@ -341,33 +508,54 @@ pub async fn start_download(
             }
         };
 
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
+        let out_parser = stdout_task.await.ok();
+        let err_parser = stderr_task.await.ok();
+
+        // 合并两个解析器的累积进度：取信息更完整的一方
+        let merged = merge_parsers(out_parser.as_ref(), err_parser.as_ref());
 
         let cancelled = status.is_none();
-        let ok = status.map(|s| s.success()).unwrap_or(false);
-        let final_status = if cancelled {
-            TaskStatus::Cancelled
-        } else if ok {
-            TaskStatus::Completed
+        let exit_ok = status.map(|s| s.success()).unwrap_or(false);
+
+        // 依据「文件是否真实落盘」判定完成度（无法定位目录时回退 parser 完整性）
+        let verdict = if cancelled {
+            Verdict::Cancelled
         } else {
-            TaskStatus::Failed
+            evaluate_completion(exit_ok, &merged, &verify_ctx)
         };
-        let line = match final_status {
-            TaskStatus::Completed => "下载完成".to_string(),
-            TaskStatus::Cancelled => "已取消".to_string(),
-            _ => "下载失败".to_string(),
+
+        let final_status = match verdict {
+            Verdict::Completed => TaskStatus::Completed,
+            Verdict::Cancelled => TaskStatus::Cancelled,
+            Verdict::Incomplete => TaskStatus::Failed,
+            Verdict::Failed => TaskStatus::Failed,
+        };
+
+        let line = match verdict {
+            Verdict::Completed => "下载完成".to_string(),
+            Verdict::Cancelled => "已取消".to_string(),
+            Verdict::Incomplete => {
+                "下载未完成：部分文件缺失或为空，已中止".to_string()
+            }
+            Verdict::Failed => "下载失败".to_string(),
+        };
+
+        // 保留累积的文件/字节信息，不再清零；仅完成时强制 100%
+        let file_percent = if final_status == TaskStatus::Completed {
+            100.0
+        } else {
+            merged.file_percent
         };
         let ev = ProgressEvent {
             task_id: tid.clone(),
             status: final_status,
-            file_index: 0,
-            file_total: 0,
-            current_file: String::new(),
-            file_percent: 100.0,
+            file_index: merged.file_index,
+            file_total: merged.file_total,
+            current_file: merged.current_file,
+            file_percent,
             speed: String::new(),
-            downloaded: String::new(),
-            total: String::new(),
+            downloaded: merged.downloaded,
+            total: merged.total,
             line,
         };
         let _ = app_handle.emit("download-progress", &ev);
@@ -384,5 +572,107 @@ pub fn cancel_download(registry: State<'_, DownloadRegistry>, task_id: String) -
         Ok(())
     } else {
         Err("任务不存在或已结束".to_string())
+    }
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use super::*;
+
+    fn mk_ctx(root: Option<std::path::PathBuf>, files: Vec<&str>) -> VerifyCtx {
+        VerifyCtx {
+            root,
+            files: files.into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn merged(fi: u32, ft: u32) -> MergedProgress {
+        MergedProgress {
+            file_index: fi,
+            file_total: ft,
+            current_file: String::new(),
+            file_percent: if ft > 0 { fi as f64 / ft as f64 * 100.0 } else { 0.0 },
+            downloaded: String::new(),
+            total: String::new(),
+        }
+    }
+
+    #[test]
+    fn exit_fail_is_failed() {
+        let ctx = mk_ctx(None, vec!["a.bin"]);
+        assert!(matches!(
+            evaluate_completion(false, &merged(1, 1), &ctx),
+            Verdict::Failed
+        ));
+    }
+
+    #[test]
+    fn unreachable_dir_falls_back_to_parser_incomplete() {
+        // 无根目录 + parser 报告 1/2 -> Incomplete（不谎报完成）
+        let ctx = mk_ctx(None, vec!["a.bin", "b.bin"]);
+        assert!(matches!(
+            evaluate_completion(true, &merged(1, 2), &ctx),
+            Verdict::Incomplete
+        ));
+    }
+
+    #[test]
+    fn unreachable_dir_parser_all_done_is_completed() {
+        let ctx = mk_ctx(None, vec!["a.bin", "b.bin"]);
+        assert!(matches!(
+            evaluate_completion(true, &merged(2, 2), &ctx),
+            Verdict::Completed
+        ));
+    }
+
+    #[test]
+    fn no_info_respects_exit_code() {
+        let ctx = mk_ctx(None, vec![]);
+        assert!(matches!(
+            evaluate_completion(true, &merged(0, 0), &ctx),
+            Verdict::Completed
+        ));
+    }
+
+    #[test]
+    fn disk_files_present_is_completed() {
+        let dir = std::env::temp_dir().join(format!("mirrordl_test_{}", std::process::id()));
+        let sub = dir.join("repo");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("a.bin"), b"x").unwrap();
+        std::fs::write(sub.join("b.bin"), b"yy").unwrap();
+        let ctx = mk_ctx(Some(dir.clone()), vec!["a.bin", "b.bin"]);
+        assert!(matches!(
+            evaluate_completion(true, &merged(0, 0), &ctx),
+            Verdict::Completed
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_file_missing_is_incomplete_even_if_exit_ok() {
+        let dir = std::env::temp_dir().join(format!("mirrordl_test_miss_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bin"), b"x").unwrap();
+        // b.bin 缺失
+        let ctx = mk_ctx(Some(dir.clone()), vec!["a.bin", "b.bin"]);
+        assert!(matches!(
+            evaluate_completion(true, &merged(2, 2), &ctx),
+            Verdict::Incomplete
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_file_is_incomplete() {
+        let dir = std::env::temp_dir().join(format!("mirrordl_test_empty_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bin"), b"").unwrap(); // 0 字节
+        let ctx = mk_ctx(Some(dir.clone()), vec!["a.bin"]);
+        assert!(matches!(
+            evaluate_completion(true, &merged(1, 1), &ctx),
+            Verdict::Incomplete
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

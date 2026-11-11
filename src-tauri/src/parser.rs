@@ -231,6 +231,26 @@ impl PullParser {
         }
     }
 
+    /// 当前累积进度快照：(file_index, file_total, current_file, file_percent, speed, downloaded, total)
+    /// 供上层在进程结束后合并出最终状态，避免把已累积的文件/字节信息清零。
+    #[allow(clippy::type_complexity)]
+    pub fn snapshot(&self) -> (u32, u32, String, f64, String, String, String) {
+        (
+            self.file_index,
+            self.file_total,
+            self.current_file.clone(),
+            self.file_percent,
+            self.speed.clone(),
+            self.downloaded.clone(),
+            self.total.clone(),
+        )
+    }
+
+    /// 是否已解析到「全部文件完成」：file_total>0 且 file_index>=file_total
+    pub fn all_files_done(&self) -> bool {
+        self.file_total > 0 && self.file_index >= self.file_total
+    }
+
     /// 构造一个终态事件
     pub fn terminal(&self, status: TaskStatus, line: &str) -> ProgressEvent {
         let completed = status == TaskStatus::Completed;

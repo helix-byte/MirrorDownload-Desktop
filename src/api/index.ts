@@ -309,6 +309,9 @@ function mockDownload(req: DownloadRequest) {
     return bytes + " B";
   };
 
+  const realistic =
+    typeof window !== "undefined" && window.location.href.includes("realistic");
+
   const tick = () => {
     if (i >= total) return;
     const size = sizes[i];
@@ -320,51 +323,83 @@ function mockDownload(req: DownloadRequest) {
     const speed = (speedBps / (1024 * 1024)).toFixed(2) + " MiB/s";
     const filePercent = Math.round((doneInFile / size) * 100);
 
-    mockProgressCb?.({
-      taskId: req.taskId,
-      status: "running",
-      fileIndex: i + 1,
-      fileTotal: total,
-      currentFile: names[i],
-      filePercent,
-      speed,
-      speedBps,
-      downloaded: fmt(doneAll),
-      total: fmt(totalBytes),
-      line: `[${i + 1}/${total}] ${filePercent}% ${names[i]}`,
-      downloadedBytes: doneAll,
-      totalBytes,
-      fileBytesDone: doneInFile,
-      fileBytesTotal: size,
-      files: emitFiles(),
-    });
+    if (realistic) {
+      // 模拟真实后端：仅提供 fileIndex/filePercent 与字符串字节，无 files/无字节字段
+      mockProgressCb?.({
+        taskId: req.taskId,
+        status: "running",
+        fileIndex: i + 1,
+        fileTotal: total,
+        currentFile: names[i],
+        filePercent,
+        speed,
+        downloaded: fmt(doneInFile),
+        total: fmt(size),
+        line: `[${i + 1}/${total}] ${filePercent}% ${names[i]}`,
+      });
+    } else {
+      mockProgressCb?.({
+        taskId: req.taskId,
+        status: "running",
+        fileIndex: i + 1,
+        fileTotal: total,
+        currentFile: names[i],
+        filePercent,
+        speed,
+        speedBps,
+        downloaded: fmt(doneAll),
+        total: fmt(totalBytes),
+        line: `[${i + 1}/${total}] ${filePercent}% ${names[i]}`,
+        downloadedBytes: doneAll,
+        totalBytes,
+        fileBytesDone: doneInFile,
+        fileBytesTotal: size,
+        files: emitFiles(),
+      });
+    }
 
     if (doneInFile >= size) {
       i++;
       doneInFile = 0;
       if (i >= total) {
         doneAll = totalBytes;
-        mockProgressCb?.({
-          taskId: req.taskId,
-          status: "completed",
-          fileIndex: total,
-          fileTotal: total,
-          currentFile: "",
-          filePercent: 100,
-          speed: "",
-          downloaded: fmt(totalBytes),
-          total: fmt(totalBytes),
-          line: "下载完成",
-          downloadedBytes: totalBytes,
-          totalBytes,
-          files: names.map((p, idx) => ({
-            path: p,
-            size: sizes[idx],
-            done: sizes[idx],
-            percent: 100,
-            status: "completed" as const,
-          })),
-        });
+        if (realistic) {
+          // 模拟真实后端完成事件：保留最终 fileIndex/fileTotal，但无 files/无字节字段
+          mockProgressCb?.({
+            taskId: req.taskId,
+            status: "completed",
+            fileIndex: total,
+            fileTotal: total,
+            currentFile: "",
+            filePercent: 100,
+            speed: "",
+            downloaded: "",
+            total: "",
+            line: "下载完成",
+          });
+        } else {
+          mockProgressCb?.({
+            taskId: req.taskId,
+            status: "completed",
+            fileIndex: total,
+            fileTotal: total,
+            currentFile: "",
+            filePercent: 100,
+            speed: "",
+            downloaded: fmt(totalBytes),
+            total: fmt(totalBytes),
+            line: "下载完成",
+            downloadedBytes: totalBytes,
+            totalBytes,
+            files: names.map((p, idx) => ({
+              path: p,
+              size: sizes[idx],
+              done: sizes[idx],
+              percent: 100,
+              status: "completed" as const,
+            })),
+          });
+        }
         return;
       }
     }

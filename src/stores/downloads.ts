@@ -144,14 +144,35 @@ export const useDownloadsStore = defineStore("downloads", () => {
     if (e.files && e.files.length) {
       t.filesDetail = e.files;
     } else if (t.filesDetail.length) {
-      // 后端未提供 files 时，依据 fileIndex/filePercent 维护最小明细
-      const idx = Math.max(0, Math.min(t.filesDetail.length - 1, e.fileIndex - 1));
-      for (let k = 0; k < t.filesDetail.length; k++) {
-        const f = t.filesDetail[k];
-        if (k < idx) f.status = "completed", f.percent = 100;
-        else if (k === idx && e.status === "running") {
-          f.status = "running";
-          f.percent = e.filePercent;
+      if (e.status === "completed") {
+        // 任务完成：把 fileIndex 覆盖到的文件标记完成；未知大小的保持 done 未知，不伪造字节
+        const upto = e.fileIndex > 0 ? e.fileIndex : t.filesDetail.length;
+        for (let k = 0; k < t.filesDetail.length; k++) {
+          const f = t.filesDetail[k];
+          if (k < upto) {
+            f.status = "completed";
+            // 仅当已知大小才补满 done，避免出现「0 B 却 100%」的矛盾
+            if (f.size && f.size > 0) {
+              f.done = f.size;
+              f.percent = 100;
+            }
+          }
+        }
+      } else if (e.status === "running") {
+        // 运行中：依据 fileIndex/filePercent 维护最小明细
+        const idx = Math.max(0, Math.min(t.filesDetail.length - 1, e.fileIndex - 1));
+        for (let k = 0; k < t.filesDetail.length; k++) {
+          const f = t.filesDetail[k];
+          if (k < idx) {
+            f.status = "completed";
+            if (f.size && f.size > 0) {
+              f.done = f.size;
+              f.percent = 100;
+            }
+          } else if (k === idx) {
+            f.status = "running";
+            f.percent = e.filePercent;
+          }
         }
       }
     }
