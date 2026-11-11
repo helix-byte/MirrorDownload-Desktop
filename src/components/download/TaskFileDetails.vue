@@ -16,6 +16,7 @@ interface RowView {
   basename: string;
   status: FileStatus;
   percent: number;
+  knownSize: boolean;
   doneText: string;
   sizeText: string;
 }
@@ -42,6 +43,11 @@ function percentOf(item: FileProgressItem): number {
   return 0;
 }
 
+/** 是否已知该文件的进度信息（有大小时才认为比例可信） */
+function hasKnownSize(item: FileProgressItem): boolean {
+  return typeof item.size === "number" && item.size > 0;
+}
+
 function basenameOf(p: string): string {
   const parts = p.split(/[/\\]/);
   return parts[parts.length - 1] || p;
@@ -50,14 +56,23 @@ function basenameOf(p: string): string {
 const rows = computed<RowView[]>(() =>
   props.files.map((item) => {
     const status = normalizeStatus(item.status);
-    const percent = status === "completed" ? 100 : percentOf(item);
+    const known = hasKnownSize(item);
+    // 仅在有可信大小时才展示百分比；完成且已知大小时按 100，否则沿用真实进度
+    const percent = known
+      ? status === "completed"
+        ? 100
+        : percentOf(item)
+      : status === "completed"
+        ? 100
+        : percentOf(item);
     return {
       item,
       basename: basenameOf(item.path),
       status,
       percent,
-      doneText: formatBytes(item.done),
-      sizeText: formatBytes(item.size),
+      knownSize: known,
+      doneText: typeof item.done === "number" && item.done > 0 ? formatBytes(item.done) : "",
+      sizeText: known ? formatBytes(item.size) : "",
     };
   }),
 );
@@ -153,8 +168,12 @@ const summary = computed(() => {
 
         <!-- 右侧 done/size 与百分比 -->
         <span class="fd-meta">
-          <span class="fd-bytes">{{ row.doneText }}<template v-if="row.item.size"> / {{ row.sizeText }}</template></span>
-          <span class="fd-percent" :class="'st-' + row.status">{{ row.percent }}%</span>
+          <span v-if="row.knownSize" class="fd-bytes">{{ row.doneText || "0 B" }} / {{ row.sizeText }}</span>
+          <span v-else class="fd-bytes fd-unknown">—</span>
+          <span class="fd-percent" :class="'st-' + row.status">
+            <template v-if="row.knownSize || row.percent > 0">{{ row.percent }}%</template>
+            <template v-else>—</template>
+          </span>
         </span>
       </div>
 
@@ -299,6 +318,9 @@ const summary = computed(() => {
   font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+.fd-bytes.fd-unknown {
+  opacity: 0.5;
 }
 .fd-percent {
   font-family: var(--mono);
