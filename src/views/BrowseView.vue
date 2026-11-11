@@ -128,7 +128,8 @@ async function doQuery() {
       repoId: id,
       repoType: form.repoType || undefined,
       revision: form.revision.trim() || undefined,
-      source: form.source || undefined,
+      // 数据源选「跟随设置」时 form.source 为空，回退到设置中的源，避免实际走了 CLI 默认源
+      source: form.source || s.source || undefined,
       hfToken: s.hfToken || undefined,
       modelscopeToken: s.modelscopeToken || undefined,
       token: s.token || undefined,
