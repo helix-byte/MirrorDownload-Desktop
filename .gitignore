@@ -8,6 +8,8 @@ dist-ssr/
 *.local
 src-tauri/target/
 src-tauri/gen/
+# Bundler 工具临时目录（避免 WiX 在系统 TEMP 打包 MSI 时被杀软占用报错）
+src-tauri/target/.bundler-tmp/
 
 # 临时与日志
 .tmp/
@@ -34,3 +36,6 @@ Thumbs.db
 
 # CLI 下载引擎运行时目录
 .transferx-downloads/
+
+# 内部过程文档与截图（PR 说明、界面截图，不入库）
+docs/
