@@ -123,4 +123,7 @@ cd src-tauri && cargo test --test cli_integration -- --ignored --nocapture
 
 ## 许可证
 
-上游 `mirror-downloader` 采用 BSL 1.1（2030-01-01 后转 Apache 2.0）。本项目作为其 GUI 封装，使用时请遵循上游许可证条款。
+- **本项目（Mirror Download 桌面版 GUI 代码）**：采用 [MIT 许可证](LICENSE)。
+- **上游 `mirror-downloader` CLI**：采用 BSL 1.1（2030-01-01 后转 Apache 2.0）。本项目作为其 GUI 封装，运行或再分发时须遵循上游许可证条款。
+
+> 简言之：MIT 仅覆盖本仓库的桌面 GUI 代码；上游下载引擎 CLI 仍受其 BSL 1.1 条款约束。

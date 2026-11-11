@@ -1,3 +1,7 @@
+本项目（Mirror Download 桌面版）的桌面 GUI 代码采用 MIT 许可证，全文如下。
+注意：本项目作为上游 mirror-downloader CLI 的图形界面封装，运行/分发时仍须
+遵循上游 mirror-downloader 的许可证条款（BSL 1.1，2030-01-01 后转 Apache 2.0）。
+---------------------------------------------------------------------------
 MIT License
 
 Copyright (c) 2026 Yichun Wang
