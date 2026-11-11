@@ -1,0 +1,36 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+dist-ssr/
+*.local
+src-tauri/target/
+src-tauri/gen/
+
+# 临时与日志
+.tmp/
+*.log
+npm-debug.log*
+
+# 编辑器与系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.sw?
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# Tauri 签名密钥
+*.pem
+*.key
+
+# CLI 下载引擎运行时目录
+.transferx-downloads/
